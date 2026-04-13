@@ -79,6 +79,12 @@ curl -X POST "http://$HOST:$PORT/generate" \\
     "images": ["https://example.com/example.jpg"],
     "max_new_tokens": 128
   }'
+
+[start] upload example:
+curl -X POST "http://$HOST:$PORT/generate-upload" \\
+  -F 'prompt=Describe the image.' \\
+  -F 'images=@/absolute/path/to/example.jpg' \\
+  -F 'max_new_tokens=128'
 EOF
 
 TARGET_MODEL="$TARGET_MODEL" \

@@ -37,6 +37,47 @@ Qwen3.5 support is functional but incomplete. It is not as fast as the Qwen3 pat
 
 Upstream DFlash has checkpoints for Llama 3.1, Qwen3 Coder, Kimi-K2.5, GPT-OSS, and more in the [Hugging Face collection](https://huggingface.co/collections/z-lab/dflash). Adding a new family starts with an adapter in `dflash_mlx/adapters.py` &mdash; see [ADDING_MODELS.md](ADDING_MODELS.md).
 
+## Qwen3.5 Image API
+
+The `feature/qwen35-image-support` branch includes a small FastAPI server for testing Qwen3.5 image prompts end to end.
+
+Start it from a fresh machine with:
+
+```bash
+git fetch origin feature/qwen35-image-support
+git checkout -b feature/qwen35-image-support origin/feature/qwen35-image-support
+bash scripts/clone_setup_run_qwen35_image_api.sh
+```
+
+Health check:
+
+```bash
+curl http://127.0.0.1:8000/healthz
+```
+
+Generate from an image URL or server-local path:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/generate" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Describe the image.",
+    "images": ["https://example.com/example.jpg"],
+    "max_new_tokens": 128
+  }'
+```
+
+Upload a local file with `multipart/form-data`:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/generate-upload" \
+  -F 'prompt=Describe the image.' \
+  -F 'images=@/absolute/path/to/example.jpg' \
+  -F 'max_new_tokens=128'
+```
+
+Repeat the `images=@...` field to send multiple images in one request.
+
 ## Benchmarks
 
 Full run details, acceptance stats, and quantized comparisons:
