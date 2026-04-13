@@ -9,6 +9,7 @@ from mlx_lm.generate import wired_limit
 
 from .adapters import LoadedTargetModel, load_target_model
 from .draft import DFlashDraftModel, load_draft_model, maybe_quantize_draft_model
+from .prompting import PromptContext, prompt_context_from_tokens
 from .runtime import dflash_generate
 
 
@@ -57,12 +58,20 @@ class DFlashGenerator:
     def target_model_path(self) -> Path:
         return self.target.resolved_model_path
 
-    def encode_prompt(self, prompt_text: str) -> mx.array:
-        return self.target.build_prompt(prompt_text)
-
-    def generate_from_tokens(
+    def build_prompt_context(
         self,
-        prompt_tokens: mx.array,
+        prompt_text: str,
+        *,
+        images: list[str] | None = None,
+    ) -> PromptContext:
+        return self.target.build_prompt_context(prompt_text, images=images)
+
+    def encode_prompt(self, prompt_text: str) -> mx.array:
+        return self.build_prompt_context(prompt_text).input_ids
+
+    def generate_from_context(
+        self,
+        prompt_context: PromptContext,
         max_new_tokens: int = 256,
         temperature: float = 0.0,
         speculative_tokens: int | None = None,
@@ -78,7 +87,7 @@ class DFlashGenerator:
             output_tokens, metrics = dflash_generate(
                 target=self.target,
                 draft=self.draft,
-                prompt_tokens=prompt_tokens,
+                prompt_tokens=prompt_context,
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
                 stop_token_ids=self.target.stop_token_ids(),
@@ -101,6 +110,30 @@ class DFlashGenerator:
             metrics=metrics,
         )
 
+    def generate_from_tokens(
+        self,
+        prompt_tokens: mx.array,
+        max_new_tokens: int = 256,
+        temperature: float = 0.0,
+        speculative_tokens: int | None = None,
+        verify_mode: str = "parallel-replay",
+        verify_chunk_size: int = 4,
+        reset_peak_memory: bool = True,
+        skip_special_tokens: bool = False,
+        profile: bool = False,
+    ) -> DFlashResult:
+        return self.generate_from_context(
+            prompt_context_from_tokens(prompt_tokens),
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            speculative_tokens=speculative_tokens,
+            verify_mode=verify_mode,
+            verify_chunk_size=verify_chunk_size,
+            reset_peak_memory=reset_peak_memory,
+            skip_special_tokens=skip_special_tokens,
+            profile=profile,
+        )
+
     def generate(
         self,
         prompt_text: str,
@@ -112,9 +145,36 @@ class DFlashGenerator:
         reset_peak_memory: bool = True,
         skip_special_tokens: bool = False,
         profile: bool = False,
+        images: list[str] | None = None,
     ) -> DFlashResult:
-        return self.generate_from_tokens(
-            prompt_tokens=self.encode_prompt(prompt_text),
+        return self.generate_from_context(
+            prompt_context=self.build_prompt_context(prompt_text, images=images),
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            speculative_tokens=speculative_tokens,
+            verify_mode=verify_mode,
+            verify_chunk_size=verify_chunk_size,
+            reset_peak_memory=reset_peak_memory,
+            skip_special_tokens=skip_special_tokens,
+            profile=profile,
+        )
+
+    def generate_with_images(
+        self,
+        prompt_text: str,
+        images: list[str],
+        max_new_tokens: int = 256,
+        temperature: float = 0.0,
+        speculative_tokens: int | None = None,
+        verify_mode: str = "parallel-replay",
+        verify_chunk_size: int = 4,
+        reset_peak_memory: bool = True,
+        skip_special_tokens: bool = False,
+        profile: bool = False,
+    ) -> DFlashResult:
+        return self.generate(
+            prompt_text=prompt_text,
+            images=images,
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             speculative_tokens=speculative_tokens,

@@ -51,6 +51,15 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Read prompt text from a file.",
     )
+    parser.add_argument(
+        "--image",
+        action="append",
+        default=None,
+        help=(
+            "Attach an image path or URL for multimodal Qwen3.5 prompts. "
+            "Repeat to include multiple images."
+        ),
+    )
     parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--seed", type=int, default=0)
@@ -180,7 +189,8 @@ def main() -> None:
     log(f"[target path] {runner.target_model_path}")
     log(f"[draft path] {runner.draft_path}")
 
-    prompt_tokens = runner.encode_prompt(prompt_text)
+    prompt_context = runner.build_prompt_context(prompt_text, images=args.image)
+    prompt_tokens = prompt_context.input_ids
     requested_speculative_tokens = (
         runner.draft.block_size
         if args.speculative_tokens is None
@@ -213,8 +223,8 @@ def main() -> None:
             f"max_new_tokens={warmup_max_new_tokens}"
         )
     for warmup_idx in range(args.warmup_runs):
-        warm_result = runner.generate_from_tokens(
-            prompt_tokens=prompt_tokens,
+        warm_result = runner.generate_from_context(
+            prompt_context=prompt_context,
             max_new_tokens=warmup_max_new_tokens,
             temperature=args.temperature,
             speculative_tokens=args.speculative_tokens,
@@ -228,8 +238,8 @@ def main() -> None:
             f"accept={warm_result.metrics['avg_acceptance_length']:.2f}"
         )
 
-    result = runner.generate_from_tokens(
-        prompt_tokens=prompt_tokens,
+    result = runner.generate_from_context(
+        prompt_context=prompt_context,
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
         speculative_tokens=args.speculative_tokens,

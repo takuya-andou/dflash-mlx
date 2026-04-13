@@ -35,6 +35,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--verify-chunk-size", type=int, default=4)
     parser.add_argument("--max-turns", type=int, default=6)
+    parser.add_argument(
+        "--image",
+        action="append",
+        default=None,
+        help=(
+            "Attach an image path or URL for multimodal Qwen3.5 prompts. "
+            "Repeat to include multiple images."
+        ),
+    )
     parser.add_argument("--show-stats", action="store_true")
     return parser.parse_args()
 
@@ -93,6 +102,7 @@ def main() -> None:
             verify_mode=args.verify_mode,
             verify_chunk_size=args.verify_chunk_size,
             skip_special_tokens=True,
+            images=args.image,
         )
         answer = result.text.strip()
         print(f"assistant> {answer}\n")

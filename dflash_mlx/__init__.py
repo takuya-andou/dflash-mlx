@@ -3,6 +3,8 @@
 from .adapters import LoadedTargetModel, adapter_for_model_type, load_target_model
 from .api import DFlashGenerator, DFlashResult
 from .draft import DFlashDraftModel, load_draft_model
+from .prompting import PromptContext
+from .qwen35_multimodal import build_qwen35_multimodal_prompt_context
 from .runtime import dflash_generate, longest_prefix_match, sample_tokens
 
 __all__ = [
@@ -10,7 +12,9 @@ __all__ = [
     "DFlashResult",
     "DFlashDraftModel",
     "LoadedTargetModel",
+    "PromptContext",
     "adapter_for_model_type",
+    "build_qwen35_multimodal_prompt_context",
     "dflash_generate",
     "load_draft_model",
     "load_target_model",

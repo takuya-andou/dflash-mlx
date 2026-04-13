@@ -1,12 +1,25 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from typing import Any
 
 import mlx.core as mx
 
 from .adapters import LoadedTargetModel
 from .draft import DFlashDraftModel
+from .prompting import PromptContext, prompt_context_from_tokens
+
+
+@dataclass
+class PrefillState:
+    prompt_context: PromptContext
+    target_cache: list[Any]
+    prompt_tokens: mx.array
+    prompt_len: int
+    first_token: int
+    target_hidden: mx.array
+    prefill_time_s: float
 
 
 def sample_tokens(logits: mx.array, temperature: float) -> mx.array:
@@ -347,10 +360,40 @@ def verify_block_chunked(
     raise RuntimeError("Chunked verifier reached an impossible state.")
 
 
-def dflash_generate(
+def prefill_target(
+    target: LoadedTargetModel,
+    prompt_context: PromptContext,
+    temperature: float,
+    layer_ids: list[int],
+) -> PrefillState:
+    target_cache = target.make_cache()
+    prompt_tokens = prompt_context.input_ids
+
+    sync_start = time.perf_counter()
+    logits, target_hidden = target.prefill_with_hidden_states(
+        prompt_context,
+        target_cache,
+        layer_ids,
+    )
+    first_token = int(sample_tokens(logits[:, -1, :], temperature).item())
+    mx.eval(logits, target_hidden)
+    prefill_time = time.perf_counter() - sync_start
+
+    return PrefillState(
+        prompt_context=prompt_context,
+        target_cache=target_cache,
+        prompt_tokens=prompt_tokens,
+        prompt_len=int(prompt_tokens.shape[0]),
+        first_token=first_token,
+        target_hidden=target_hidden,
+        prefill_time_s=prefill_time,
+    )
+
+
+def dflash_decode_from_prefill(
     target: LoadedTargetModel,
     draft: DFlashDraftModel,
-    prompt_tokens: mx.array,
+    prefill_state: PrefillState,
     max_new_tokens: int,
     temperature: float,
     stop_token_ids: set[int],
@@ -360,27 +403,19 @@ def dflash_generate(
     verify_chunk_size: int,
     profile: bool = False,
 ) -> tuple[list[int], dict[str, Any]]:
-    target_cache = target.make_cache()
+    target_cache = prefill_state.target_cache
+    prompt_tokens = prefill_state.prompt_tokens
+    prompt_len = prefill_state.prompt_len
+    target_hidden = prefill_state.target_hidden
     draft_cache = draft.make_cache()
     profile_times: dict[str, float] | None = {} if profile else None
     total_max_tokens = int(prompt_tokens.shape[0]) + max_new_tokens
-    prompt_len = int(prompt_tokens.shape[0])
     if speculative_tokens is None:
         block_size = draft.block_size
     else:
         block_size = max(1, min(speculative_tokens, draft.block_size))
 
-    sync_start = time.perf_counter()
-    logits, target_hidden = target.forward_with_hidden_states(
-        prompt_tokens[None],
-        target_cache,
-        layer_ids,
-    )
-    first_token = int(sample_tokens(logits[:, -1, :], temperature).item())
-    mx.eval(logits, target_hidden)
-    prefill_time = time.perf_counter() - sync_start
-
-    output_tokens = prompt_tokens.tolist() + [first_token]
+    output_tokens = prompt_tokens.tolist() + [prefill_state.first_token]
     start = prompt_len
     acceptance_lengths: list[int] = []
 
@@ -490,15 +525,15 @@ def dflash_generate(
     decode_time = time.perf_counter() - decode_start
     output_tokens = output_tokens[:total_max_tokens]
     generated_tokens = generated_token_count(output_tokens, prompt_len)
-    total_time = prefill_time + decode_time
+    total_time = prefill_state.prefill_time_s + decode_time
 
     metrics = {
         "num_input_tokens": prompt_len,
         "num_output_tokens": generated_tokens,
-        "prefill_time_s": prefill_time,
+        "prefill_time_s": prefill_state.prefill_time_s,
         "decode_time_s": decode_time,
         "total_time_s": total_time,
-        "prompt_tps": prompt_len / max(prefill_time, 1e-9),
+        "prompt_tps": prompt_len / max(prefill_state.prefill_time_s, 1e-9),
         "generation_tps": generated_tokens / max(decode_time, 1e-9),
         "end_to_end_tps": generated_tokens / max(total_time, 1e-9),
         "avg_acceptance_length": sum(acceptance_lengths) / max(len(acceptance_lengths), 1),
@@ -518,3 +553,42 @@ def dflash_generate(
             "steps": len(acceptance_lengths),
         }
     return output_tokens, metrics
+
+
+def dflash_generate(
+    target: LoadedTargetModel,
+    draft: DFlashDraftModel,
+    prompt_tokens: mx.array | PromptContext,
+    max_new_tokens: int,
+    temperature: float,
+    stop_token_ids: set[int],
+    layer_ids: list[int],
+    speculative_tokens: int | None,
+    verify_mode: str,
+    verify_chunk_size: int,
+    profile: bool = False,
+) -> tuple[list[int], dict[str, Any]]:
+    prompt_context = (
+        prompt_tokens
+        if isinstance(prompt_tokens, PromptContext)
+        else prompt_context_from_tokens(prompt_tokens)
+    )
+    prefill_state = prefill_target(
+        target=target,
+        prompt_context=prompt_context,
+        temperature=temperature,
+        layer_ids=layer_ids,
+    )
+    return dflash_decode_from_prefill(
+        target=target,
+        draft=draft,
+        prefill_state=prefill_state,
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        stop_token_ids=stop_token_ids,
+        layer_ids=layer_ids,
+        speculative_tokens=speculative_tokens,
+        verify_mode=verify_mode,
+        verify_chunk_size=verify_chunk_size,
+        profile=profile,
+    )

@@ -18,6 +18,8 @@ from mlx_lm.models.gated_delta import (
 )
 
 from .model_prep import prepare_custom_model
+from .prompting import PromptContext, prompt_context_from_tokens
+from .qwen35_multimodal import build_qwen35_multimodal_prompt_context
 
 
 def resolve_model_path(path_or_repo: str) -> Path:
@@ -252,6 +254,23 @@ class MLXTargetAdapter:
     def build_prompt(self, tokenizer, prompt_text: str) -> mx.array:
         raise NotImplementedError
 
+    def build_prompt_context(
+        self,
+        tokenizer,
+        prompt_text: str,
+        *,
+        images: list[str] | None = None,
+        model_path: Path | None = None,
+    ) -> PromptContext:
+        if images:
+            raise NotImplementedError(
+                f"{self.family} does not implement image prompt preprocessing."
+            )
+        return prompt_context_from_tokens(
+            self.build_prompt(tokenizer, prompt_text),
+            prompt_text=prompt_text,
+        )
+
     def stop_token_ids(self, tokenizer) -> set[int]:
         raise NotImplementedError
 
@@ -279,6 +298,22 @@ class MLXTargetAdapter:
         return_rollback_records: bool = False,
     ) -> tuple[mx.array, mx.array] | tuple[mx.array, mx.array, dict[int, dict[str, mx.array]]]:
         raise NotImplementedError
+
+    def prefill_with_hidden_states(
+        self,
+        model,
+        prompt_context: PromptContext,
+        cache: list[Any],
+        layer_ids: list[int],
+        return_rollback_records: bool = False,
+    ) -> tuple[mx.array, mx.array] | tuple[mx.array, mx.array, dict[int, dict[str, mx.array]]]:
+        return self.forward_with_hidden_states(
+            model,
+            prompt_context.input_ids[None],
+            cache,
+            layer_ids,
+            return_rollback_records=return_rollback_records,
+        )
 
     def forward_verifier_states(
         self,
@@ -351,6 +386,29 @@ class Qwen35TargetAdapter(MLXTargetAdapter):
             source_id = path_or_repo if not Path(path_or_repo).exists() else str(model_path)
             return prepare_custom_model(source_id)
         return model_path
+
+    def build_prompt_context(
+        self,
+        tokenizer,
+        prompt_text: str,
+        *,
+        images: list[str] | None = None,
+        model_path: Path | None = None,
+    ) -> PromptContext:
+        if images:
+            if model_path is None:
+                raise ValueError("Qwen3.5 image prompts require a resolved model path.")
+            return build_qwen35_multimodal_prompt_context(
+                model_path=model_path,
+                prompt_text=prompt_text,
+                images=images,
+            )
+        return super().build_prompt_context(
+            tokenizer,
+            prompt_text,
+            images=images,
+            model_path=model_path,
+        )
 
     def build_prompt(self, tokenizer, prompt_text: str) -> mx.array:
         messages = [{"role": "user", "content": prompt_text}]
@@ -425,6 +483,38 @@ class Qwen35TargetAdapter(MLXTargetAdapter):
             return logits, target_hidden, rollback_records
         return logits, target_hidden
 
+    def prefill_with_hidden_states(
+        self,
+        model,
+        prompt_context: PromptContext,
+        cache: list[Any],
+        layer_ids: list[int],
+        return_rollback_records: bool = False,
+    ) -> tuple[mx.array, mx.array] | tuple[mx.array, mx.array, dict[int, dict[str, mx.array]]]:
+        if prompt_context.pixel_values is not None:
+            if not hasattr(model, "forward_dflash"):
+                raise NotImplementedError(
+                    "Qwen3.5 image prompts require the custom DFlash target model fork."
+                )
+            return model.forward_dflash(
+                inputs=prompt_context.input_ids[None],
+                cache=cache,
+                layer_ids=layer_ids,
+                attention_mask=prompt_context.extras.get("attention_mask"),
+                pixel_values=prompt_context.pixel_values,
+                image_grid_thw=prompt_context.image_grid_thw,
+                video_grid_thw=prompt_context.extras.get("video_grid_thw"),
+                position_ids=prompt_context.extras.get("position_ids"),
+                return_rollback_records=return_rollback_records,
+            )
+        return super().prefill_with_hidden_states(
+            model,
+            prompt_context,
+            cache,
+            layer_ids,
+            return_rollback_records=return_rollback_records,
+        )
+
     def forward_verifier_states(
         self,
         model,
@@ -432,14 +522,13 @@ class Qwen35TargetAdapter(MLXTargetAdapter):
         cache: list[Any],
         layer_ids: list[int],
     ) -> tuple[mx.array, mx.array, dict[int, dict[str, mx.array]]]:
-        if hasattr(model, "language_model") and hasattr(
-            model.language_model.model,
-            "forward_dflash",
-        ):
+        if hasattr(model, "language_model") and hasattr(model.language_model, "model"):
+            position_ids = model.language_model.resolve_position_ids(inputs, cache)
             return model.language_model.model.forward_dflash(
                 inputs=inputs,
                 cache=cache,
                 layer_ids=layer_ids,
+                position_ids=position_ids,
                 return_rollback_records=True,
             )
 
@@ -454,14 +543,13 @@ class Qwen35TargetAdapter(MLXTargetAdapter):
         cache: list[Any],
         layer_ids: list[int],
     ) -> tuple[mx.array, mx.array]:
-        if hasattr(model, "language_model") and hasattr(
-            model.language_model.model,
-            "forward_dflash",
-        ):
+        if hasattr(model, "language_model") and hasattr(model.language_model, "model"):
+            position_ids = model.language_model.resolve_position_ids(inputs, cache)
             norm_hidden_states, target_hidden = model.language_model.model.forward_dflash(
                 inputs=inputs,
                 cache=cache,
                 layer_ids=layer_ids,
+                position_ids=position_ids,
                 return_rollback_records=False,
             )
             return self.lm_head_logits(model, norm_hidden_states[:, -1:, :]), target_hidden
@@ -734,8 +822,21 @@ class LoadedTargetModel:
     tokenizer: Any
     adapter: MLXTargetAdapter
 
+    def build_prompt_context(
+        self,
+        prompt_text: str,
+        *,
+        images: list[str] | None = None,
+    ) -> PromptContext:
+        return self.adapter.build_prompt_context(
+            self.tokenizer,
+            prompt_text,
+            images=images,
+            model_path=self.resolved_model_path,
+        )
+
     def build_prompt(self, prompt_text: str) -> mx.array:
-        return self.adapter.build_prompt(self.tokenizer, prompt_text)
+        return self.build_prompt_context(prompt_text).input_ids
 
     def stop_token_ids(self) -> set[int]:
         return self.adapter.stop_token_ids(self.tokenizer)
@@ -762,6 +863,21 @@ class LoadedTargetModel:
         return self.adapter.forward_with_hidden_states(
             self.model,
             inputs,
+            cache,
+            layer_ids,
+            return_rollback_records=return_rollback_records,
+        )
+
+    def prefill_with_hidden_states(
+        self,
+        prompt_context: PromptContext,
+        cache: list[Any],
+        layer_ids: list[int],
+        return_rollback_records: bool = False,
+    ) -> tuple[mx.array, mx.array] | tuple[mx.array, mx.array, dict[int, dict[str, mx.array]]]:
+        return self.adapter.prefill_with_hidden_states(
+            self.model,
+            prompt_context,
             cache,
             layer_ids,
             return_rollback_records=return_rollback_records,
