@@ -55,7 +55,7 @@ uv sync
 echo "[download] target=$TARGET_MODEL"
 echo "[download] draft=$DRAFT_MODEL"
 TARGET_MODEL="$TARGET_MODEL" DRAFT_MODEL="$DRAFT_MODEL" SEED="$SEED" \
-uv run --with pillow --with transformers python - <<'PY'
+uv run --with pillow --with transformers --with torch --with torchvision python - <<'PY'
 import os
 
 from dflash_mlx import DFlashGenerator
@@ -92,5 +92,5 @@ DRAFT_MODEL="$DRAFT_MODEL" \
 HOST="$HOST" \
 PORT="$PORT" \
 SEED="$SEED" \
-uv run --with fastapi --with uvicorn --with pillow --with transformers --with python-multipart \
+uv run --with fastapi --with uvicorn --with pillow --with transformers --with python-multipart --with torch --with torchvision \
   python scripts/qwen35_image_api.py

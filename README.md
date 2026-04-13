@@ -40,7 +40,7 @@ Upstream DFlash has checkpoints for Llama 3.1, Qwen3 Coder, Kimi-K2.5, GPT-OSS, 
 ## Qwen3.5 Image API
 
 The `feature/qwen35-image-support` branch includes a small FastAPI server for testing Qwen3.5 image prompts end to end.
-The helper script installs the extra runtime packages it needs, including `fastapi`, `uvicorn`, and `python-multipart` for file uploads.
+The helper script installs the extra runtime packages it needs, including `fastapi`, `uvicorn`, `python-multipart`, `torch`, and `torchvision`.
 
 Start it from a fresh machine with:
 
