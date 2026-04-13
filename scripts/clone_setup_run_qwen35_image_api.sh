@@ -92,5 +92,5 @@ DRAFT_MODEL="$DRAFT_MODEL" \
 HOST="$HOST" \
 PORT="$PORT" \
 SEED="$SEED" \
-uv run --with fastapi --with uvicorn --with pillow --with transformers \
+uv run --with fastapi --with uvicorn --with pillow --with transformers --with python-multipart \
   python scripts/qwen35_image_api.py
